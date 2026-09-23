@@ -1,14 +1,6 @@
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{
-    Attribute,
-    Data,
-    DeriveInput,
-    Error,
-    Fields,
-    Path,
-    Result,
-};
+use syn::{Attribute, Data, DeriveInput, Error, Fields, Path, Result};
 
 pub(super) fn expand(input: DeriveInput) -> Result<TokenStream> {
     if !input.generics.params.is_empty() {
@@ -67,15 +59,129 @@ pub(super) fn expand(input: DeriveInput) -> Result<TokenStream> {
 }
 
 fn parse_target_enum(attributes: &[Attribute]) -> Result<Path> {
-    let attribute = attributes
+    let mut attributes = attributes
         .iter()
-        .find(|attribute| attribute.path().is_ident("enum_mirror"))
-        .ok_or_else(|| {
-            Error::new(
-                proc_macro2::Span::call_site(),
-                "EnumMirror requires #[enum_mirror(path::to::TargetEnum)]",
-            )
-        })?;
+        .filter(|attribute| attribute.path().is_ident("enum_mirror"));
+    let attribute = attributes.next().ok_or_else(|| {
+        Error::new(
+            proc_macro2::Span::call_site(),
+            "EnumMirror requires #[enum_mirror(path::to::TargetEnum)]",
+        )
+    })?;
+
+    if let Some(duplicate) = attributes.next() {
+        return Err(Error::new_spanned(
+            duplicate,
+            "EnumMirror expects exactly one #[enum_mirror(...)] attribute",
+        ));
+    }
 
     attribute.parse_args::<Path>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand;
+    use syn::parse_quote;
+
+    #[test]
+    fn rejects_invalid_declarations() {
+        let cases = [
+            (
+                parse_quote!(
+                    enum Source {
+                        Active,
+                    }
+                ),
+                "requires #[enum_mirror",
+            ),
+            (
+                parse_quote!(
+                    #[enum_mirror(Target)]
+                    struct Source;
+                ),
+                "only be derived for enums",
+            ),
+            (
+                parse_quote!(#[enum_mirror(Target)] union Source { value: u8 }),
+                "only be derived for enums",
+            ),
+            (
+                parse_quote!(
+                    #[enum_mirror(Target)]
+                    enum Source<T> {
+                        Value(T),
+                    }
+                ),
+                "does not support generic enums",
+            ),
+            (
+                parse_quote!(
+                    #[enum_mirror(Target)]
+                    enum Source {
+                        Value(u8),
+                    }
+                ),
+                "unit variants only",
+            ),
+            (
+                parse_quote!(
+                    #[enum_mirror(Target)]
+                    enum Source {
+                        Value { value: u8 },
+                    }
+                ),
+                "unit variants only",
+            ),
+            (
+                parse_quote!(
+                    #[enum_mirror(Target)]
+                    #[enum_mirror(Other)]
+                    enum Source {
+                        Active,
+                    }
+                ),
+                "exactly one",
+            ),
+        ];
+        for (input, expected) in cases {
+            let error = expand(input).unwrap_err().to_string();
+            assert!(
+                error.contains(expected),
+                "expected {expected:?}, got {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_target_attributes() {
+        for input in [
+            parse_quote!(
+                #[enum_mirror]
+                enum Source {
+                    Active,
+                }
+            ),
+            parse_quote!(
+                #[enum_mirror()]
+                enum Source {
+                    Active,
+                }
+            ),
+            parse_quote!(
+                #[enum_mirror(Target, Other)]
+                enum Source {
+                    Active,
+                }
+            ),
+            parse_quote!(
+                #[enum_mirror = "Target"]
+                enum Source {
+                    Active,
+                }
+            ),
+        ] {
+            assert!(expand(input).is_err());
+        }
+    }
 }
